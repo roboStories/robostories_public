@@ -52,7 +52,8 @@ class SensorSignal:
                 [self.tComp.nanCnt, self.tComp.grdCnt], \
                 [self.hDht.nanCnt, self.hDht.grdCnt], \
                 [self.pBmp.nanCnt, self.pBmp.grdCnt]
-        
+
+
 def getSunsetSunrise(lat:str, lng:str):
     url = f'https://api.sunrisesunset.io/json?lat={lat}&lng={lng}'
     try:
@@ -71,18 +72,19 @@ def getSunsetSunrise(lat:str, lng:str):
         print(f"Error fetching sunrise/sunset data: {e}")
         return None, None, None, None, None, None
 
+
 def generate_error_bar_chart(sensData:list[SensorSignal]):
     sensKeys = ["R_" + str(i+1) for i in range(len(sensData))]
     bar_data = []
     for i,sensKey in enumerate(sensKeys):
         signalKeys:list[str] = sensData[i].getKeys()
         for j, errCnt in enumerate(sensData[i].getErrVals()):
-            errKeys = sensData[i].tBmp.getKeys()    # assuming all the sensor signals are of the same Signal class
+            errKeys = sensData[i].tBmp.getKeys()[1:]    # assuming all the sensor signals are of the same Signal class
             for k, err in enumerate(errCnt):
                 bar_data.append(go.Bar(
-                    name=f'{sensKey} {signalKeys[j]} {errKeys[k]}',
                     x=[f'{sensKey} {signalKeys[j]} {errKeys[k]}'],
-                    y=[err[-1]]))
+                    y=[err[-1]],
+                    showlegend=False))
             
     
     error_fig = {
