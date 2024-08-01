@@ -104,7 +104,6 @@ app.layout = html.Div([
 ###################### FUNCTIONS ######################
 ###### Sensor data --> fetch data periodically ######
 def fetchValsLoop():
-    starttime = time.monotonic()
     while True:
         dataFetched:int = 0
         for i, ip in enumerate(sensIpAddr):
@@ -123,7 +122,9 @@ def fetchValsLoop():
             # write the csv data
         
         # wait till the next execution
-        time.sleep(EXEC_CYCLE - ((time.monotonic() - starttime) % EXEC_CYCLE))
+        now = datetime.now()
+        slepTime = EXEC_CYCLE - now.second - now.microsecond / 1_000_000
+        time.sleep(slepTime)
 
 
 ###### Visuals --> Day data API ######
