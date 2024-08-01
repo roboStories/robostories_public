@@ -1,3 +1,4 @@
+###################### Imports ######################
 import dash
 from dash import dcc, html
 from dash.dependencies import Input, Output
@@ -5,18 +6,20 @@ import plotly.graph_objs as go
 import requests
 from collections import deque
 import sys
-from signals import Signal
 from datetime import datetime
+import time
+import threading
+from signals import Signal
 
 
 ####
 
 # TODOs
-# - reorganize the classes structure, to become more usable and better organized
 # - write the data from all the sensors into csv file
 
 ####
 
+###################### CLASSES ######################
 class SensorSignal:
     __keyTDht:str = 'tDht'
     __keyTBmp:str = 'tBmp'
@@ -54,6 +57,76 @@ class SensorSignal:
                 [self.pBmp.nanCnt, self.pBmp.grdCnt]
 
 
+###################### CONSTANTS AND GLOBALS ######################
+# display widnow
+MAXLEN_DISPLAY:int = 1440 # 24h window
+
+# sensor data vars
+EXEC_CYCLE:int = 60 # execute sensor loop every X sec
+sensIpAddr:str = sys.argv[1].split(',')
+sensData:list[SensorSignal] = [SensorSignal(maxLen=MAXLEN_DISPLAY) for _ in sensIpAddr]
+
+# day data api vars
+lat:str = sys.argv[2].replace(" ", "").split(",")[0]
+lng:str = sys.argv[2].replace(" ", "").split(",")[1]
+sunrise, sunset, firstLight, lastLight, dawn, dusk = '', '', '', '', '', ''
+
+# Dash app
+app = dash.Dash(__name__)
+
+# Define the app layout
+app.layout = html.Div([
+    html.H3("Home Weather Station"),
+    html.Div(id='day-times', children=[
+        html.P(f'Sunrise: {sunrise}'),
+        html.P(f"Sunset: {sunset}"),
+        html.P(f"First Light: {firstLight}"),
+        html.P(f"Last Light: {lastLight}"),
+        html.P(f"Dawn: {dawn}"),
+        html.P(f"Dusk: {dusk}"),
+    ]),
+    dcc.Graph(id='temperature-chart'),
+    dcc.Graph(id='humidity-chart'),
+    dcc.Graph(id='pressure-chart'),
+    dcc.Graph(id='error-counters-chart'),
+    dcc.Interval(
+        id='interval-component',
+        interval=EXEC_CYCLE*1000,  # Poll every 10 seconds
+        n_intervals=0
+    ),
+    dcc.Interval(
+        id='day-interval-component',
+        interval=EXEC_CYCLE*1000,  # Poll every 60 seconds
+        n_intervals=0
+    )
+])
+
+###################### FUNCTIONS ######################
+###### Sensor data --> fetch data periodically ######
+def fetchValsLoop():
+    starttime = time.monotonic()
+    while True:
+        dataFetched:int = 0
+        for i, ip in enumerate(sensIpAddr):
+            # Poll the sensor data
+            try:
+                response = requests.get('http://' + ip + '/data')
+                data = response.json()
+                # Update temperature and humidity data
+                sensData[i].updateVals(data, datetime.now().isoformat())
+                dataFetched += 1
+            except Exception as e:
+                print(f"Error fetching data: {e}")
+
+        if dataFetched == len(sensIpAddr):
+            pass
+            # write the csv data
+        
+        # wait till the next execution
+        time.sleep(EXEC_CYCLE - ((time.monotonic() - starttime) % EXEC_CYCLE))
+
+
+###### Visuals --> Day data API ######
 def getSunsetSunrise(lat:str, lng:str):
     url = f'https://api.sunrisesunset.io/json?lat={lat}&lng={lng}'
     try:
@@ -73,100 +146,15 @@ def getSunsetSunrise(lat:str, lng:str):
         return None, None, None, None, None, None
 
 
-def generate_error_bar_chart(sensData:list[SensorSignal]):
-    sensKeys = ["R_" + str(i+1) for i in range(len(sensData))]
-    bar_data = []
-    for i,sensKey in enumerate(sensKeys):
-        signalKeys:list[str] = sensData[i].getKeys()
-        for j, errCnt in enumerate(sensData[i].getErrVals()):
-            errKeys = sensData[i].tBmp.getKeys()[1:]    # assuming all the sensor signals are of the same Signal class
-            for k, err in enumerate(errCnt):
-                bar_data.append(go.Bar(
-                    x=[f'{sensKey} {signalKeys[j]} {errKeys[k]}'],
-                    y=[err[-1]],
-                    showlegend=False))
-            
-    
-    error_fig = {
-        'data': bar_data,
-        'layout': go.Layout(
-            title='Error Counters',
-            xaxis=dict(title='Sensor and Signal'),
-            yaxis=dict(title='Error Count'),
-            barmode='group'
-        )
-    }
-
-    return error_fig
-
-###################### SETUP ######################
-# Initialize app config
-sensIpAddr:list[str] = sys.argv[1].split(',')
-lat:str = sys.argv[2].replace(" ", "").split(",")[0]
-lng:str = sys.argv[2].replace(" ", "").split(",")[1]
-
-# Initialize the Dash app
-app = dash.Dash(__name__)
-
-# Deques to store the last 100 data points
-MAXLEN_DISPLAY:int = 1440 # 24h window
-sensData = [SensorSignal(maxLen=MAXLEN_DISPLAY) for _ in sensIpAddr]
-sunrise, sunset, firstLight, lastLight, dawn, dusk = getSunsetSunrise(lat=lat,  lng=lng)
-
-# Define the layout of the Dash app
-app.layout = html.Div([
-    html.H3("Home Weather Station"),
-    html.Div([
-        html.P(f"Sunrise: {sunrise}"),
-        html.P(f"Sunset: {sunset}"),
-        html.P(f"First Light: {firstLight}"),
-        html.P(f"Last Light: {lastLight}"),
-        html.P(f"Dawn: {dawn}"),
-        html.P(f"Dusk: {dusk}"),
-    ]),
-    dcc.Graph(id='temperature-chart'),
-    dcc.Graph(id='humidity-chart'),
-    dcc.Graph(id='pressure-chart'),
-    dcc.Graph(id='error-counters-chart'),
-    dcc.Interval(
-        id='interval-component',
-        interval=10*1000,  # Poll every 10 seconds
-        n_intervals=0
-    )
-])
-
-# Define callback to update charts
+###### Visuals --> update charts routine ######
 @app.callback(
-    [
-        Output('temperature-chart', 'figure'),
+    [Output('temperature-chart', 'figure'),
         Output('humidity-chart', 'figure'),
         Output('pressure-chart', 'figure'),
-        Output('error-counters-chart', 'figure')
-     ],
+        Output('error-counters-chart', 'figure')],
     [Input('interval-component', 'n_intervals')]
-)
+) 
 def update_charts(n_intervals):
-    # update sunrise/sunset times every x cycles
-    if n_intervals%10 == 0:
-        global sunrise, sunset, firstLight, lastLight, dawn, dusk
-        sunrise, sunset, firstLight, lastLight, dawn, dusk = getSunsetSunrise(lat=lat,  lng=lng)
-
-    dataFetched:int = 0
-    for i, ip in enumerate(sensIpAddr):
-        # Poll the sensor data
-        try:
-            response = requests.get('http://' + ip + '/data')
-            data = response.json()
-            # Update temperature and humidity data
-            sensData[i].updateVals(data, datetime.now().isoformat())
-            dataFetched += 1
-        except Exception as e:
-            print(f"Error fetching data: {e}")
-
-    if dataFetched == len(sensIpAddr):
-        pass
-        # write the csv data
-
     # Create the temperature and humidity chart
     dataTemp = []
     dataTemp.extend([go.Scatter(x=list(sensData[i].ts), y=list(sensData[i].tDht.val), mode='lines+markers', name='T_dht_R_' + str(i+1)) for i in range(len(sensIpAddr))])
@@ -188,7 +176,6 @@ def update_charts(n_intervals):
             yaxis=dict(title='Humidity %', side='left'),
         )
     }
-
     dataPres = [go.Scatter(x=list(sensData[i].ts), y=list(sensData[i].pBmp.val), mode='lines+markers', name='Pressure_R' + str(i+1)) for i in range(len(sensIpAddr))]
     pres_fig = {
         'data': dataPres,
@@ -197,12 +184,64 @@ def update_charts(n_intervals):
             yaxis=dict(title='Pressure mBar', side='left'),
         )
     }
-    
     # Create the error counters chart
     error_fig = generate_error_bar_chart(sensData)
-
     return temp_fig, humid_fig, pres_fig, error_fig
 
-# Run the app
+
+###### Visuals --> error bar chart ######
+def generate_error_bar_chart(sensData:list[SensorSignal]):
+    sensKeys = ["R_" + str(i+1) for i in range(len(sensData))]
+    bar_data = []
+    for i,sensKey in enumerate(sensKeys):
+        signalKeys:list[str] = sensData[i].getKeys()
+        for j, errCnt in enumerate(sensData[i].getErrVals()):
+            errKeys = sensData[i].tBmp.getKeys()[1:]    # assuming all the sensor signals are of the same Signal class
+            for k, err in enumerate(errCnt):
+                bar_data.append(go.Bar(
+                    x=[f'{sensKey} {signalKeys[j]} {errKeys[k]}'],
+                    y=[err[-1]],
+                    showlegend=False))    
+    error_fig = {
+        'data': bar_data,
+        'layout': go.Layout(
+            title='Error Counters',
+            xaxis=dict(title='Sensor and Signal'),
+            yaxis=dict(title='Error Count'),
+            barmode='group'
+        )
+    }
+    return error_fig
+
+
+###### Visuals --> update day time routine ######
+@app.callback(
+    Output('day-times', 'children'),
+    Input('day-interval-component', 'n_intervals')
+)
+def update_day_times(n_intervals):
+    sunrise, sunset, firstLight, lastLight, dawn, dusk = getSunsetSunrise(lat=lat,  lng=lng)
+    return [
+        html.P(f"Sunrise: {sunrise}"),
+        html.P(f"Sunset: {sunset}"),
+        html.P(f"First Light: {firstLight}"),
+        html.P(f"Last Light: {lastLight}"),
+        html.P(f"Dawn: {dawn}"),
+        html.P(f"Dusk: {dusk}")
+    ]
+
+
+###### Visuals --> app runner thread ######
+def runVisualsServer():
+    app.run_server(debug=True, host='0.0.0.0', use_reloader=False)
+
+
+###################### MAIN ######################
 if __name__ == '__main__':
-    app.run_server(debug=True, host='0.0.0.0')
+    ### start the dash app
+    dashAppThread = threading.Thread(target=runVisualsServer)
+    dashAppThread.start()
+
+    ### run the sensor loop
+    fetchValsLoop()
+    
